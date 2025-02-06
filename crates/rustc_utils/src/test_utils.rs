@@ -152,7 +152,10 @@ impl<'tcx> CompileResult<'tcx> {
     let body_id = hir
       .items()
       .find_map(|id| match hir.item(id).kind {
-        ItemKind::Fn(_, _, body) => Some(body),
+        ItemKind::Fn{sig: _, generics: _, body, has_body} => match has_body {
+          true => Some(body),
+          false => None,
+        },
         _ => None,
       })
       .unwrap();

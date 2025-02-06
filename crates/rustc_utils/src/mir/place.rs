@@ -3,6 +3,7 @@
 use std::{borrow::Cow, collections::VecDeque};
 
 use log::{trace, warn};
+use rustc_borrowck::consumers::PoloniusRegionVid;
 use rustc_data_structures::fx::{FxHashMap as HashMap, FxHashSet as HashSet};
 use rustc_hir::def_id::DefId;
 use rustc_infer::infer::TyCtxtInferExt;
@@ -13,11 +14,11 @@ use rustc_middle::{
     ProjectionElem, VarDebugInfo, VarDebugInfoContents, RETURN_PLACE,
   },
   traits::ObligationCause,
-  ty::{self, AdtKind, Region, RegionKind, RegionVid, Ty, TyCtxt, TyKind, TypeVisitor},
+  ty::{self, AdtKind, Region, RegionKind, Ty, TyCtxt, TyKind, TypeVisitor},
 };
 use rustc_target::abi::{FieldIdx, VariantIdx};
 use rustc_trait_selection::traits::NormalizeExt;
-use rustc_type_ir::TypingMode;
+use rustc_type_ir::{RegionVid, TypingMode};
 
 use crate::{AdtDefExt, SpanExt};
 
@@ -74,7 +75,7 @@ pub trait PlaceExt<'tcx> {
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     def_id: DefId,
-  ) -> HashMap<RegionVid, Vec<(Place<'tcx>, Mutability)>>;
+  ) -> HashMap<PoloniusRegionVid, Vec<(Place<'tcx>, Mutability)>>;
 
   /// Returns all possible projections of `self` that do not go through a reference,
   /// i.e. the set of fields directly in the structure referred by `self`.
@@ -162,7 +163,7 @@ impl<'tcx> PlaceExt<'tcx> for Place<'tcx> {
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     def_id: DefId,
-  ) -> HashMap<RegionVid, Vec<(Place<'tcx>, Mutability)>> {
+  ) -> HashMap<PoloniusRegionVid, Vec<(Place<'tcx>, Mutability)>> {
     let ty = self.ty(body.local_decls(), tcx).ty;
     let mut region_collector = RegionVisitor::<RegionMemberCollector>::new(
       tcx,
@@ -373,7 +374,7 @@ enum StoppingCondition {
 trait RegionVisitorDispatcher<'tcx> {
   fn on_visit_place(&mut self, _: Place<'tcx>) {}
   fn on_visit_type(&mut self, _: Ty<'tcx>) {}
-  fn on_visit_region_member(&mut self, _: RegionVid, _: Place<'tcx>, _: Mutability) {}
+  fn on_visit_region_member(&mut self, _: PoloniusRegionVid, _: Place<'tcx>, _: Mutability) {}
 }
 
 #[derive(Default)]
@@ -386,12 +387,12 @@ impl<'tcx> RegionVisitorDispatcher<'tcx> for VisitedPlacesCollector<'tcx> {
 }
 
 #[derive(Default)]
-struct RegionMemberCollector<'tcx>(HashMap<RegionVid, Vec<(Place<'tcx>, Mutability)>>);
+struct RegionMemberCollector<'tcx>(HashMap<PoloniusRegionVid, Vec<(Place<'tcx>, Mutability)>>);
 
 impl<'tcx> RegionVisitorDispatcher<'tcx> for RegionMemberCollector<'tcx> {
   fn on_visit_region_member(
     &mut self,
-    key: RegionVid,
+    key: PoloniusRegionVid,
     place: Place<'tcx>,
     mutbl: Mutability,
   ) {
@@ -445,7 +446,7 @@ impl<'tcx, Dispatcher: Default> RegionVisitor<'tcx, Dispatcher> {
 }
 
 /// Used to describe aliases of owned and raw pointers.
-pub const UNKNOWN_REGION: RegionVid = RegionVid::MAX;
+pub const UNKNOWN_REGION: PoloniusRegionVid = PoloniusRegionVid::MAX;
 
 impl<'tcx, Dispatcher: RegionVisitorDispatcher<'tcx>> TypeVisitor<TyCtxt<'tcx>>
   for RegionVisitor<'tcx, Dispatcher>
@@ -540,7 +541,7 @@ impl<'tcx, Dispatcher: RegionVisitorDispatcher<'tcx>> TypeVisitor<TyCtxt<'tcx>>
       }
 
       TyKind::RawPtr(ty, _) => {
-        self.visit_region(Region::new_var(tcx, UNKNOWN_REGION));
+        self.visit_region(Region::new_var(tcx, RegionVid::from(UNKNOWN_REGION)));
         self.place_stack.push(ProjectionElem::Deref);
         self.visit_ty(*ty);
         self.place_stack.pop();
@@ -599,8 +600,8 @@ impl<'tcx, Dispatcher: RegionVisitorDispatcher<'tcx>> TypeVisitor<TyCtxt<'tcx>>
   fn visit_region(&mut self, region: ty::Region<'tcx>) -> Self::Result {
     trace!("visiting region {region:?}");
     let region = match region.kind() {
-      RegionKind::ReVar(region) => region,
-      RegionKind::ReStatic => RegionVid::from_usize(0),
+      RegionKind::ReVar(region) => PoloniusRegionVid::from(region),
+      RegionKind::ReStatic => PoloniusRegionVid::from_usize(0),
       RegionKind::ReErased | RegionKind::ReLateParam(_) => {
         return;
       }
